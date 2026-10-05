@@ -1,14 +1,4 @@
-# 🤖 Chatbot web con Django 5 + Google Gemini (`gemini-3.8-flash`)
-
-El chatbot es **híbrido**:
-
-1. **Capa ML (tu notebook):** el clasificador TF-IDF + LinearSVC detecta la intención. Los saludos y
-   despedidas simples se responden al instante, sin gastar una llamada a Gemini.
-2. **Capa Gemini:** todo lo demás (precios, stock, envíos, cambios...) lo responde `gemini-3.8-flash`,
-   con el catálogo **real** de la base de datos inyectado en la instrucción de sistema.
-3. **Respaldo:** si Gemini falla (sin clave, cuota, timeout), el usuario recibe un mensaje amable. Nunca un 500.
-
----
+# 🤖 Chatbot
 
 ## 1. Estructura del proyecto
 
