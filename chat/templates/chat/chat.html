@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Asistente virtual · {{ STORE_NAME }}{% endblock %}
+
+{% block content %}
+<section class="chat-card" id="chat-app" data-send-url="{% url 'chat:send' %}" data-reset-url="{% url 'chat:reset' %}">
+  <div class="chat-header">
+    <div>
+      <strong>🤖 Asistente de {{ STORE_NAME }}</strong>
+      <small>Respuestas con IA · {{ STORE_HOURS }}</small>
+    </div>
+    <button type="button" id="chat-reset" class="btn-ghost" title="Empezar una conversación nueva">Nueva conversación</button>
+  </div>
+
+  <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+
+  <div class="chat-suggestions" id="chat-suggestions">
+    {% for s in suggestions %}<button type="button" class="chip">{{ s }}</button>{% endfor %}
+  </div>
+
+  <div class="chat-input">
+    <textarea id="chat-text" rows="1" maxlength="800" placeholder="Escribe tu consulta…" aria-label="Mensaje"></textarea>
+    <button type="button" id="chat-send" class="btn-primary">Enviar</button>
+  </div>
+  <p class="chat-note">El asistente puede equivocarse. Verifica precios y stock por WhatsApp antes de pagar.</p>
+</section>
+
+{{ initial_messages|json_script:"initial-messages" }}
+{% endblock %}
+
+{% block scripts %}<script src="{% static 'js/chat.js' %}" defer></script>{% endblock %}

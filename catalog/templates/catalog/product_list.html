@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Productos · {{ STORE_NAME }}{% endblock %}
+{% block content %}
+<h1>Productos</h1>
+
+<form class="filters" method="get">
+  <input type="search" name="q" value="{{ query }}" placeholder="Buscar producto…">
+  <select name="categoria">
+    <option value="">Todas las categorías</option>
+    {% for c in categories %}<option value="{{ c.slug }}" {% if c.slug == current_category %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+  </select>
+  <button class="btn-primary" type="submit">Filtrar</button>
+</form>
+
+<div class="grid">
+  {% for p in products %}
+  <article class="card">
+    <div class="card-img">
+      <span class="card-emoji">{{ p.emoji }}</span>
+      {% if p.image_url %}<img src="{{ p.image_url }}" alt="{{ p.name }}" loading="lazy" onerror="this.remove()">{% endif %}
+      {% if p.discount_percent %}<span class="badge badge-sale">-{{ p.discount_percent }}%</span>{% endif %}
+    </div>
+    <div class="card-body">
+      <small class="muted">{{ p.category.name }} · {{ p.sku }}</small>
+      <h3>{{ p.name }}</h3>
+      <p class="muted">{{ p.description|truncatechars:110 }}</p>
+      <p class="price">S/ {{ p.price|stringformat:".2f" }}
+        {% if p.discount_percent %}<s class="muted">S/ {{ p.old_price|stringformat:".2f" }}</s>{% endif %}</p>
+      {% if p.sizes %}<p class="muted">Tallas: {{ p.sizes }}</p>{% endif %}
+      {% if p.stock == 0 %}<span class="badge badge-out">Agotado</span>
+      {% elif p.stock <= 5 %}<span class="badge badge-low">Últimas {{ p.stock }} unidades</span>
+      {% else %}<span class="badge badge-ok">En stock</span>{% endif %}
+    </div>
+  </article>
+  {% empty %}
+  <p>No encontramos productos con esos filtros.</p>
+  {% endfor %}
+</div>
+{% endblock %}

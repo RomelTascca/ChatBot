@@ -1,10 +1,4 @@
-"""Preprocesamiento de texto (Sección 3 del notebook).
-
-IMPORTANTE: esta clase debe vivir en un módulo importable (no en `__main__`),
-porque joblib/pickle guarda la ruta del módulo al serializar el Pipeline.
-Por eso el modelo entrenado en Colab NO se puede cargar directamente aquí:
-hay que reentrenar con `python manage.py train_chatbot`.
-"""
+"""Preprocesamiento de texto del notebook original (TextCleaner + STOP_WORDS)."""
 import re
 import unicodedata
 
@@ -18,7 +12,7 @@ STOP_WORDS = [
 
 
 class TextCleaner(BaseEstimator, TransformerMixin):
-    """Minúsculas, sin tildes, sin URLs/números/símbolos."""
+    """Minúsculas, sin tildes, sin URLs ni números, sin símbolos."""
 
     def fit(self, X, y=None):
         return self

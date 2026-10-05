@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Servicios y beneficios · {{ STORE_NAME }}{% endblock %}
+{% block content %}
+<h1>Servicios y beneficios</h1>
+<p class="muted">Todo lo que {{ STORE_NAME }} ofrece para que tu compra sea fácil y segura.</p>
+
+{% for kind, items in groups.items %}
+<h2 class="group-title">{{ kind }}</h2>
+<div class="grid">
+  {% for o in items %}
+  <article class="card card-offer">
+    <div class="offer-icon">{{ o.icon }}</div>
+    <div class="card-body">
+      <h3>{{ o.name }}</h3>
+      {% if o.highlight %}<p class="highlight">{{ o.highlight }}</p>{% endif %}
+      <p class="muted">{{ o.description }}</p>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% empty %}
+<p>Aún no hay servicios cargados. Ejecuta <code>python manage.py seed_data</code>.</p>
+{% endfor %}
+{% endblock %}

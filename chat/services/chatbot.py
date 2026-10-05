@@ -1,106 +1,132 @@
-"""Orquestador del chatbot: valida, clasifica, usa la memoria y persiste.
-
-Es la única pieza que conoce a la vez el clasificador y los modelos de Django;
-las vistas solo llaman a `ChatbotService.reply(...)`.
-
-Sobre la "memoria": el clasificador TF-IDF + SVM es *stateless* (cada mensaje se
-clasifica solo). La memoria se usa para (1) persistir y mostrar el historial y
-(2) no repetir la misma respuesta dos veces seguidas. Si algún día se conecta un
-LLM, `recent_history()` ya entrega el contexto en el formato necesario.
 """
-import random
+Servicio del chatbot: orquesta clasificador ML (notebook) + Gemini.
+
+Flujo de `ChatbotService.reply()`:
+  1. El clasificador TF-IDF + SVM detecta la intención del mensaje.
+  2. Saludos/despedidas cortos -> respuesta inmediata (sin gastar una llamada a Gemini).
+  3. Todo lo demás -> Gemini (gemini-3.8-flash) con el catálogo real en la instrucción de sistema.
+  4. Si Gemini falla (sin clave, timeout, cuota...) -> respuesta de respaldo amable. Nunca rompe la web.
+"""
+import logging
 from dataclasses import dataclass
 
 from django.conf import settings
-from django.db import transaction
+from google import genai
 
-from ..models import Conversation, Message
-from .exceptions import InvalidMessageError
-from .intent_classifier import IntentClassifier
+from .intent_classifier import IntentResult, intent_classifier
+from .prompt_builder import build_system_prompt
+
+logger = logging.getLogger(__name__)
+
+SHORTCUT_INTENTS = {"saludo", "despedida"}
+SHORTCUT_MAX_WORDS = 4
 
 
-@dataclass(frozen=True)
+class GeminiNotConfigured(RuntimeError):
+    """Falta GEMINI_API_KEY en el .env."""
+
+
+@dataclass
 class BotReply:
     text: str
-    intent: str | None
-    confidence: float
-
-
-def build_default_classifier() -> IntentClassifier:
-    cfg = settings.CHATBOT
-    return IntentClassifier(
-        model_path=cfg["MODEL_PATH"],
-        min_confidence=cfg["MIN_CONFIDENCE"],
-        min_margin=cfg["MIN_MARGIN"],
-        fallback_responses=cfg["FALLBACK_RESPONSES"],
-    )
-
-
-# Instancia compartida por proceso (el modelo se carga una sola vez)
-_classifier: IntentClassifier | None = None
-
-
-def get_classifier() -> IntentClassifier:
-    global _classifier
-    if _classifier is None:
-        _classifier = build_default_classifier()
-    return _classifier
-
-
-def set_classifier(classifier: IntentClassifier | None) -> None:
-    """Permite inyectar/reiniciar el clasificador (tests, recarga tras reentrenar)."""
-    global _classifier
-    _classifier = classifier
+    source: str                      # "gemini" | "shortcut" | "fallback"
+    intent: str = ""
+    confidence: float | None = None
 
 
 class ChatbotService:
-    def __init__(self, classifier: IntentClassifier | None = None):
-        self.classifier = classifier or get_classifier()
-        self.max_length = settings.CHATBOT["MAX_MESSAGE_LENGTH"]
+    def __init__(self):
+        self._client = None
 
-    # -- validación ---------------------------------------------------------
-    def validate(self, text) -> str:
-        if not isinstance(text, str):
-            raise InvalidMessageError("El mensaje debe ser texto.")
-        text = text.strip()
-        if not text:
-            raise InvalidMessageError("Por favor, escribe un mensaje.")
-        if len(text) > self.max_length:
-            raise InvalidMessageError(f"El mensaje no puede superar {self.max_length} caracteres.")
-        return text
+    # ------------------------------------------------------------------
+    # >>> AQUÍ SE USA LA API KEY <<<
+    # settings.GEMINI_API_KEY se lee del archivo .env (variable GEMINI_API_KEY)
+    # en config/settings.py y se pasa al cliente con `api_key=`.
+    # ------------------------------------------------------------------
+    def _get_client(self) -> genai.Client:
+        if self._client is None:
+            api_key = settings.GEMINI_API_KEY
+            if not api_key or api_key.startswith("pega_aqui"):
+                raise GeminiNotConfigured("GEMINI_API_KEY no está configurada en el archivo .env")
+            self._client = genai.Client(api_key=api_key)
+        return self._client
 
-    # -- memoria ------------------------------------------------------------
+    # ------------------------------------------------------------------
+    def reply(self, user_text: str, history: list[dict]) -> BotReply:
+        """
+        user_text: mensaje actual del cliente.
+        history:   mensajes previos [{"role": "user"|"assistant", "content": str}, ...].
+        """
+        intent = intent_classifier.predict(user_text)
+        intent_tag = intent.tag if intent else ""
+        confidence = intent.confidence if intent else None
+
+        shortcut = self._try_shortcut(user_text, intent)
+        if shortcut:
+            return BotReply(shortcut, "shortcut", intent_tag, confidence)
+
+        try:
+            text = self._call_gemini(user_text, history, intent)
+            if text:
+                return BotReply(text, "gemini", intent_tag, confidence)
+            logger.warning("Gemini devolvió una respuesta vacía")
+        except GeminiNotConfigured as exc:
+            logger.error("%s", exc)
+        except Exception as exc:  # errores de red, cuota, clave inválida, etc.
+            status = getattr(exc, "status_code", None)
+            # Se registra solo el mensaje y el código HTTP (nunca la clave ni los headers).
+            logger.error("Error llamando a Gemini (HTTP %s): %s", status, exc)
+
+        return BotReply(self._fallback_text(), "fallback", intent_tag, confidence)
+
+    # ------------------------------------------------------------------
+    def _try_shortcut(self, user_text: str, intent: IntentResult | None) -> str | None:
+        if intent is None or intent.tag not in SHORTCUT_INTENTS:
+            return None
+        if intent.margin < settings.CHAT_INTENT_MIN_MARGIN:   # mensajes mixtos tienen margen bajo
+            return None
+        if len(user_text.split()) > SHORTCUT_MAX_WORDS:   # "hola, ¿cuánto cuesta el polo?" -> Gemini
+            return None
+        return intent_classifier.canned_response(intent.tag)
+
+    def _call_gemini(self, user_text: str, history: list[dict], intent: IntentResult | None) -> str:
+        client = self._get_client()
+
+        # Historial en formato "stateless" de la Interactions API (se guarda en NUESTRA base de datos).
+        steps = []
+        for item in history:
+            step_type = "user_input" if item["role"] == "user" else "model_output"
+            steps.append({"type": step_type, "content": [{"type": "text", "text": item["content"]}]})
+        while steps and steps[0]["type"] != "user_input":   # el hilo debe empezar con el usuario
+            steps.pop(0)
+        steps.append({"type": "user_input", "content": [{"type": "text", "text": user_text}]})
+
+        kwargs = {
+            "model": settings.GEMINI_MODEL,                 # "gemini-3.8-flash"
+            "input": steps,
+            "system_instruction": build_system_prompt(intent),
+            "store": False,                                  # no se guarda la conversación en los servidores de Google
+            "timeout": settings.GEMINI_TIMEOUT_SECONDS,
+        }
+        if settings.GEMINI_THINKING_LEVEL:
+            kwargs["generation_config"] = {"thinking_level": settings.GEMINI_THINKING_LEVEL}
+
+        interaction = client.interactions.create(**kwargs)
+        return (interaction.output_text or "").strip()
+
     @staticmethod
-    def recent_history(conversation: Conversation, limit: int = 10) -> list[dict]:
-        """Últimos mensajes en formato {role, content} (útil si se conecta un LLM)."""
-        qs = conversation.messages.order_by("-created_at", "-id")[:limit]
-        return [{"role": m.role, "content": m.content} for m in reversed(list(qs))]
+    def _fallback_text() -> str:
+        return (
+            "Ahora mismo no puedo responder tu consulta 😕. Por favor inténtalo de nuevo en unos minutos "
+            f"o escríbenos por WhatsApp al {settings.STORE_WHATSAPP} ({settings.STORE_HOURS})."
+        )
 
-    @staticmethod
-    def _last_bot_text(conversation: Conversation) -> str | None:
-        last = conversation.messages.filter(role=Message.Role.BOT).order_by("-created_at", "-id").first()
-        return last.content if last else None
 
-    # -- flujo principal ------------------------------------------------------
-    def reply(self, conversation: Conversation, user_text: str) -> BotReply:
-        text = self.validate(user_text)
+_service: ChatbotService | None = None
 
-        # Clasificar primero: si el modelo falla no dejamos mensajes huérfanos en BD
-        prediction = self.classifier.predict(text)
 
-        last_bot = self._last_bot_text(conversation)
-        candidates = [r for r in prediction.responses if r != last_bot] or prediction.responses
-        answer = random.choice(candidates)
-
-        with transaction.atomic():
-            Message.objects.create(conversation=conversation, role=Message.Role.USER, content=text)
-            Message.objects.create(
-                conversation=conversation,
-                role=Message.Role.BOT,
-                content=answer,
-                intent=prediction.intent or "",
-                confidence=prediction.confidence,
-            )
-            conversation.save(update_fields=["updated_at"])
-
-        return BotReply(text=answer, intent=prediction.intent, confidence=prediction.confidence)
+def get_chatbot_service() -> ChatbotService:
+    global _service
+    if _service is None:
+        _service = ChatbotService()
+    return _service

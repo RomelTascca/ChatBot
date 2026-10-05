@@ -5,13 +5,12 @@ from django.db import models
 
 
 class Conversation(models.Model):
-    """Una conversación. Pertenece a una sesión anónima y, opcionalmente, a un usuario."""
+    """Una conversación = un hilo de chat, ligado a una sesión (y a un usuario si está logueado)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="conversations",
-    )
+    session_key = models.CharField(max_length=40, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                             related_name="conversations")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -19,25 +18,34 @@ class Conversation(models.Model):
         ordering = ["-updated_at"]
 
     def __str__(self):
-        return f"Conversación {self.id} ({self.created_at:%Y-%m-%d %H:%M})"
+        return f"Conversación {str(self.id)[:8]}"
+
+    def recent_messages(self, limit: int):
+        """Los últimos `limit` mensajes en orden cronológico."""
+        latest = list(self.messages.order_by("-id")[:limit])
+        return latest[::-1]
 
 
 class Message(models.Model):
     class Role(models.TextChoices):
         USER = "user", "Usuario"
-        BOT = "bot", "Bot"
+        ASSISTANT = "assistant", "Asistente"
+
+    class Source(models.TextChoices):
+        GEMINI = "gemini", "Gemini"
+        SHORTCUT = "shortcut", "Clasificador ML (sin Gemini)"
+        FALLBACK = "fallback", "Respuesta de respaldo"
 
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
-    role = models.CharField(max_length=4, choices=Role.choices)
+    role = models.CharField(max_length=10, choices=Role.choices)
     content = models.TextField()
-    # Metadatos del clasificador (solo en mensajes del bot): útiles para analítica y reentrenamiento
-    intent = models.CharField(max_length=50, blank=True, default="")
+    intent = models.CharField(max_length=40, blank=True)
     confidence = models.FloatField(null=True, blank=True)
+    source = models.CharField(max_length=10, choices=Source.choices, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["created_at", "id"]
-        indexes = [models.Index(fields=["conversation", "created_at"])]
+        ordering = ["id"]
 
     def __str__(self):
-        return f"[{self.role}] {self.content[:40]}"
+        return f"[{self.role}] {self.content[:50]}"

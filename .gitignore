@@ -1,7 +1,8 @@
+.env
+venv/
+.venv/
 __pycache__/
 *.pyc
-.env
 db.sqlite3
-.venv/
+chat/ml/intent_model.joblib
 staticfiles/
-chat/ml/artifacts/*.joblib
