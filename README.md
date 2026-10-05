@@ -2,8 +2,6 @@
 
 ## 1. Estructura del proyecto
 
-```
-django_gemini_chatbot/
 ├── .env.example            ← plantilla de variables (cópiala a .env)
 ├── .gitignore              ← ya excluye .env, db.sqlite3 y el modelo .joblib
 ├── manage.py
